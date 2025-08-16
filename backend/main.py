@@ -39,6 +39,12 @@ origins = [
     "http://127.0.0.1:5173",
     "http://192.168.10.31:5173",
 ]
+
+# Dynamically add allowed frontend origin from environment variable
+allowed_frontend_origin = os.environ.get('ALLOWED_FRONTEND_ORIGIN')
+if allowed_frontend_origin:
+    origins.append(allowed_frontend_origin)
+
 render_external_url = os.environ.get('RENDER_EXTERNAL_URL')
 if render_external_url:
     origins.append(render_external_url)
