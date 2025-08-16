@@ -1,0 +1,22 @@
+# General ignores
+.DS_Store
+.env
+package-lock.json
+
+# Backend ignores
+backend/uploads/
+backend/venv/
+backend/__pycache__/
+
+# Large binary directories
+poppler-24.08.0/
+tesseract/
+
+# IDE and OS specific files
+.idea/
+*.suo
+*.user
+*.bak
+*.log
+*.swp
+*.swo
