@@ -73,8 +73,7 @@ def _convert_file_to_images(file_path: str, file_type: str, task_id: str) -> lis
     try:
         images = []
         if file_type == 'application/pdf':
-            poppler_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'poppler-24.08.0', 'Library', 'bin'))
-            images = convert_from_path(file_path, poppler_path=poppler_path)
+            images = convert_from_path(file_path)
         else:
             images = [Image.open(file_path)]
         logger.info(f"[Task {task_id}] Converted file to {len(images)} image(s).")
