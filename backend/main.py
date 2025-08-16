@@ -7,7 +7,7 @@ load_dotenv() # Load environment variables from .env file
 print(f"DEBUG: GEMINI_API_KEY loaded: {os.environ.get('GEMINI_API_KEY')}")
 from pdf2image import convert_from_path
 
-pytesseract.pytesseract.tesseract_cmd = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'tesseract', 'tesseract.exe'))
+
 from PIL import Image
 import google.generativeai as genai
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, HTTPException
