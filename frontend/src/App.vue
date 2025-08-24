@@ -1,7 +1,7 @@
 <template>
   <div id="app">
     <header class="header">
-      <h1>Lao-Korean Translator</h1>
+      <h1>Logos</h1>
       <p>Upload a PDF or Image to translate Lao text to Korean</p>
     </header>
 
@@ -22,7 +22,7 @@
 
       <div v-if="task_id" class="status-section">
         <div :class="['status-card', status.toLowerCase()]">
-          <p><strong>Status:</strong> {{ status }}</p>
+          <p><strong>Status:</strong> {{ displayStatus }}</p>
           <div v-if="isLoading" class="loader"></div>
         </div>
       </div>
@@ -74,10 +74,37 @@ export default {
   },
   computed: {
     isLoading() {
-      return this.status === 'PENDING' || this.status === 'PROCESSING';
+      return this.status === 'PENDING' || this.status === 'PROCESSING' ||
+             this.status === 'IMAGE_CONVERSION' || this.status === 'OCR_PROCESSING' ||
+             this.status === 'TRANSLATION_PROCESSING' || this.status === 'REFINEMENT_PROCESSING' ||
+             this.status === 'PDF_GENERATION';
     },
     renderedTranslatedText() {
       return marked(this.translated_text);
+    },
+    displayStatus() {
+      switch (this.status) {
+        case 'PENDING':
+          return '파일 업로드 대기 중...';
+        case 'PROCESSING':
+          return '처리 중...';
+        case 'IMAGE_CONVERSION':
+          return '이미지 변환 중...';
+        case 'OCR_PROCESSING':
+          return '텍스트 추출 중 (OCR)...';
+        case 'TRANSLATION_PROCESSING':
+          return '번역 중...';
+        case 'REFINEMENT_PROCESSING':
+          return '번역 다듬기 중...';
+        case 'PDF_GENERATION':
+          return 'PDF 생성 중...';
+        case 'COMPLETE':
+          return '번역 완료!';
+        case 'FAILED':
+          return '번역 실패!';
+        default:
+          return '알 수 없는 상태';
+      }
     }
   },
   methods: {

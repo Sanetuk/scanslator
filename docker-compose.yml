@@ -1,0 +1,20 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    # RENDER_EXTERNAL_URL is not needed for local Docker setup
+    # volumes:
+    #   - ./backend/uploads:/app/uploads # Uncomment if you need persistent uploads
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # The backend URL is an empty string because we are using a reverse proxy.
+        - VITE_APP_BACKEND_API_URL=
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

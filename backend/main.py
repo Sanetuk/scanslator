@@ -230,7 +230,12 @@ def _create_pdf_from_text(text: str, output_path: str):
 
 class JobStatus(str, Enum):
     PENDING = "PENDING"
-    PROCESSING = "PROCESSING"
+    PROCESSING = "PROCESSING" # General processing, will be refined
+    IMAGE_CONVERSION = "IMAGE_CONVERSION"
+    OCR_PROCESSING = "OCR_PROCESSING"
+    TRANSLATION_PROCESSING = "TRANSLATION_PROCESSING"
+    REFINEMENT_PROCESSING = "REFINEMENT_PROCESSING"
+    PDF_GENERATION = "PDF_GENERATION"
     COMPLETE = "COMPLETE"
     FAILED = "FAILED"
 
@@ -244,14 +249,19 @@ class TranslationJob(BaseModel):
 jobs = {}
 
 def process_file(task_id: str, file_path: str, file_type: str):
-    jobs[task_id].status = JobStatus.PROCESSING
+    jobs[task_id].status = JobStatus.PROCESSING # Initial general processing status
     logger.info(f"[Task {task_id}] Starting processing for file: {file_path}")
 
     try:
+        jobs[task_id].status = JobStatus.IMAGE_CONVERSION # New status
         images = _convert_file_to_images(file_path, file_type, task_id)
         base64_images = _save_images_as_base64(images, task_id)
         jobs[task_id].original_images = base64_images
+
+        jobs[task_id].status = JobStatus.OCR_PROCESSING # New status
         extracted_text = _perform_ocr(images, task_id)
+
+        jobs[task_id].status = JobStatus.TRANSLATION_PROCESSING # New status
         translated_text = _translate_text_with_gemini(extracted_text, task_id)
 
         # Step 5: Finalize job
