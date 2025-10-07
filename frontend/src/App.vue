@@ -16,25 +16,42 @@
         </div>
         <button @click="submitFile" :disabled="!file || isLoading" class="translate-button">
           <span v-if="!isLoading">Upload and Translate</span>
-          <span v-else>Processing...</span>
+          <span v-else>{{ isUploading ? 'Uploading...' : 'Processing...' }}</span>
         </button>
+        <div v-if="isUploading" class="progress-container">
+          <div class="progress-track">
+            <div class="progress-fill" :style="{ width: uploadProgress + '%' }"></div>
+          </div>
+          <span class="progress-label">{{ uploadProgress }}%</span>
+        </div>
       </div>
 
-      <div v-if="task_id" class="status-section">
-        <div :class="['status-card', status.toLowerCase()]">
+      <div v-if="task_id || isUploading" class="status-section">
+        <div :class="['status-card', status ? status.toLowerCase() : '']">
           <p><strong>Status:</strong> {{ displayStatus }}</p>
-          <div v-if="isLoading" class="loader"></div>
+          <div v-if="isLoading && !isUploading" class="loader"></div>
         </div>
       </div>
 
       <div v-if="status === 'COMPLETE'" class="results-section">
-        <div class="result-panel">
+        <div class="result-panel translation-panel">
           <h2>Korean Translation</h2>
           <div class="markdown-output" v-html="renderedTranslatedText"></div>
           <div class="button-group">
             <button @click="copyToClipboard">Copy Text</button>
             <button @click="downloadTranslation">Download .txt</button>
             <button @click="downloadPdf">Download .pdf</button>
+          </div>
+        </div>
+        <div v-if="originalImages.length" class="result-panel images-panel">
+          <h2>Original Document</h2>
+          <div class="image-gallery">
+            <img
+              v-for="(image, index) in originalImages"
+              :key="index"
+              :src="`data:image/png;base64,${image}`"
+              :alt="`Original page ${index + 1}`"
+            >
           </div>
         </div>
       </div>
@@ -62,110 +79,141 @@ export default {
       file: null,
       task_id: null,
       status: null,
-      translated_text: `# 이것은 **굵은** 텍스트입니다. 그리고 *기울임꼴* 입니다.
-
-# 제목입니다.
-
-- 목록 1
-- 목록 2`,
+      translated_text: '',
+      originalImages: [],
       polling: null,
+      uploadProgress: 0,
+      isUploading: false,
     };
 
   },
   computed: {
     isLoading() {
-      return this.status === 'PENDING' || this.status === 'PROCESSING' ||
+      return this.isUploading || this.status === 'PENDING' || this.status === 'PROCESSING' ||
              this.status === 'IMAGE_CONVERSION' || this.status === 'OCR_PROCESSING' ||
              this.status === 'TRANSLATION_PROCESSING' || this.status === 'REFINEMENT_PROCESSING' ||
              this.status === 'PDF_GENERATION';
     },
     renderedTranslatedText() {
-      return marked(this.translated_text);
+      return marked(this.translated_text || '');
     },
     displayStatus() {
+      if (this.isUploading) {
+        return 'Uploading file...';
+      }
       switch (this.status) {
         case 'PENDING':
-          return '파일 업로드 대기 중...';
+          return 'Job queued...';
         case 'PROCESSING':
-          return '처리 중...';
+          return 'Processing...';
         case 'IMAGE_CONVERSION':
-          return '이미지 변환 중...';
+          return 'Converting images...';
         case 'OCR_PROCESSING':
-          return '텍스트 추출 중 (OCR)...';
+          return 'Running OCR...';
         case 'TRANSLATION_PROCESSING':
-          return '번역 중...';
+          return 'Translating text...';
         case 'REFINEMENT_PROCESSING':
-          return '번역 다듬기 중...';
+          return 'Refining translation...';
         case 'PDF_GENERATION':
-          return 'PDF 생성 중...';
+          return 'Preparing PDF...';
         case 'COMPLETE':
-          return '번역 완료!';
+          return 'Translation complete!';
         case 'FAILED':
-          return '번역 실패!';
+          return 'Translation failed.';
         default:
-          return '알 수 없는 상태';
+          return 'Waiting...';
       }
     }
   },
   methods: {
     handleFileUpload(event) {
-      this.file = event.target.files[0];
-      this.resetState();
+      this.file = event.target.files[0] || null;
+      this.resetState(true);
     },
     async submitFile() {
+      if (!this.file || this.isUploading) {
+        return;
+      }
+
       const formData = new FormData();
       formData.append('file', this.file);
+
+      this.isUploading = true;
+      this.uploadProgress = 0;
+      this.status = null;
+      this.translated_text = '';
+      this.originalImages = [];
 
       try {
         const response = await axios.post(`${import.meta.env.VITE_APP_BACKEND_API_URL}/upload/`, formData, {
           headers: {
             'Content-Type': 'multipart/form-data',
           },
+          onUploadProgress: (event) => {
+            if (event.total) {
+              this.uploadProgress = Math.round((event.loaded / event.total) * 100);
+            } else {
+              this.uploadProgress = Math.min(99, this.uploadProgress + 1);
+            }
+          },
         });
         this.task_id = response.data.task_id;
         this.status = 'PENDING';
         this.pollStatus();
+        this.uploadProgress = 100;
       } catch (error) {
         console.error('Error uploading file:', error);
         this.status = 'FAILED';
+      } finally {
+        this.isUploading = false;
       }
     },
     pollStatus() {
+      if (this.polling) {
+        clearInterval(this.polling);
+      }
       this.polling = setInterval(async () => {
         try {
           const response = await axios.get(`${import.meta.env.VITE_APP_BACKEND_API_URL}/api/status/${this.task_id}`);
           this.status = response.data.status;
           if (this.status === 'COMPLETE') {
             clearInterval(this.polling);
+            this.polling = null;
             this.fetchResults();
           } else if (this.status === 'FAILED') {
             clearInterval(this.polling);
+            this.polling = null;
           }
         } catch (error) {
           console.error('Error polling status:', error);
           this.status = 'FAILED';
           clearInterval(this.polling);
+          this.polling = null;
         }
       }, 2000);
     },
     async fetchResults() {
-      console.log('Fetching translation results...');
       try {
         const response = await axios.get(`${import.meta.env.VITE_APP_BACKEND_API_URL}/api/result/${this.task_id}`);
-        console.log('Received results response:', response.data);
-        this.translated_text = response.data.translated_text;
-        console.log('translated_text after assignment (first 100 chars):', this.translated_text.substring(0, 100));
+        this.translated_text = response.data.translated_text || '';
+        this.originalImages = Array.isArray(response.data.original_images) ? response.data.original_images : [];
       } catch (error) {
         console.error('Error fetching results:', error);
         this.status = 'FAILED';
       }
     },
     copyToClipboard() {
+      if (!this.translated_text) {
+        return;
+      }
       navigator.clipboard.writeText(this.translated_text).then(() => {
         alert('Copied to clipboard!');
       });
     },
     downloadTranslation() {
+      if (!this.translated_text) {
+        return;
+      }
       const blob = new Blob([this.translated_text], { type: 'text/plain' });
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
@@ -176,7 +224,7 @@ export default {
     async downloadPdf() {
       try {
         const response = await axios.get(`${import.meta.env.VITE_APP_BACKEND_API_URL}/api/result/${this.task_id}?format=pdf`, {
-          responseType: 'blob' // Important: responseType must be 'blob' for binary data
+          responseType: 'blob'
         });
         const url = window.URL.createObjectURL(new Blob([response.data]));
         const link = document.createElement('a');
@@ -191,17 +239,26 @@ export default {
         alert('Failed to download PDF. Please try again.');
       }
     },
-    resetState() {
-        this.task_id = null;
-        this.status = null;
-        this.translated_text = '';
-        if (this.polling) {
-            clearInterval(this.polling);
-        }
-    }
+    resetState(preserveFile = false) {
+      if (!preserveFile) {
+        this.file = null;
+      }
+      this.task_id = null;
+      this.status = null;
+      this.translated_text = '';
+      this.originalImages = [];
+      this.uploadProgress = 0;
+      this.isUploading = false;
+      if (this.polling) {
+        clearInterval(this.polling);
+      }
+      this.polling = null;
+    },
   },
   beforeUnmount() {
-    clearInterval(this.polling);
+    if (this.polling) {
+      clearInterval(this.polling);
+    }
   },
 };
 </script>
@@ -278,80 +335,123 @@ body {
 .file-input-wrapper {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-input[type="file"] {
-  display: none;
+  justify-content: center;
 }
 
 .file-label {
-  border: 2px dashed var(--primary-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.5rem;
+  border: 2px dashed var(--secondary-color);
   border-radius: var(--border-radius);
-  padding: 1.5rem 2rem;
+  color: var(--secondary-color);
   cursor: pointer;
   transition: var(--transition-speed);
-  width: 80%;
+  width: 100%;
+  max-width: 400px;
   text-align: center;
-  font-size: 1.1rem;
-  color: var(--light-text-color);
+  font-weight: 600;
+  background-color: rgba(63, 81, 181, 0.05);
 }
 
 .file-label:hover {
-  background-color: #e8f5e9;
-  border-color: var(--secondary-color);
+  background-color: rgba(63, 81, 181, 0.1);
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+
+#file-upload {
+  display: none;
 }
 
 .translate-button {
   background-color: var(--primary-color);
   color: white;
   border: none;
-  padding: 1rem 2.5rem;
+  padding: 0.75rem 2rem;
   border-radius: var(--border-radius);
-  font-size: 1.2rem;
   cursor: pointer;
+  font-size: 1rem;
+  font-weight: 600;
   transition: var(--transition-speed);
-  box-shadow: var(--box-shadow);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 220px;
+}
+
+.translate-button:hover {
+  background-color: #43a047;
+  transform: translateY(-1px);
 }
 
 .translate-button:disabled {
-  background-color: #a5d6a7;
+  background-color: #B0BEC5;
   cursor: not-allowed;
-  box-shadow: none;
+  transform: none;
 }
 
-.translate-button:hover:not(:disabled) {
-  background-color: #43A047;
-  transform: translateY(-2px);
+.progress-container {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.progress-track {
+  flex: 1;
+  height: 0.5rem;
+  background-color: #e0e0e0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: var(--secondary-color);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+
+.progress-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--light-text-color);
+  min-width: 3rem;
+  text-align: right;
 }
 
 .status-section {
-  margin-top: 1rem;
+  display: flex;
+  justify-content: center;
 }
 
 .status-card {
   background-color: var(--card-background);
-  padding: 1.5rem;
+  padding: 1.5rem 2rem;
   border-radius: var(--border-radius);
   box-shadow: var(--box-shadow);
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  border-left: 5px solid var(--primary-color);
+  min-width: 320px;
+  text-align: center;
+  position: relative;
 }
 
-.status-card.failed {
-  border-left-color: #e57373; /* Red for failed */
+.status-card p {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .loader {
   border: 4px solid #f3f3f3;
   border-top: 4px solid var(--primary-color);
   border-radius: 50%;
-  width: 24px;
-  height: 24px;
+  width: 36px;
+  height: 36px;
   animation: spin 1s linear infinite;
+  margin: 1rem auto 0;
 }
 
 @keyframes spin {
@@ -361,11 +461,9 @@ input[type="file"] {
 
 .results-section {
   display: grid;
-  grid-template-columns: 1fr; /* Always single column */
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 2rem;
 }
-
-
 
 .result-panel {
   background-color: var(--card-background);
@@ -374,6 +472,7 @@ input[type="file"] {
   box-shadow: var(--box-shadow);
   display: flex;
   flex-direction: column;
+  gap: 1rem;
 }
 
 .result-panel h2 {
@@ -381,20 +480,20 @@ input[type="file"] {
   margin-top: 0;
   border-bottom: 2px solid var(--primary-color);
   padding-bottom: 0.5rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 }
 
 .image-gallery {
   flex-grow: 1;
-  max-height: 500px; /* Limit height for scrollability */
+  max-height: 500px;
   overflow-y: auto;
-  padding-right: 5px; /* Space for scrollbar */
+  padding-right: 5px;
 }
 
 .image-gallery img {
   width: 100%;
   height: auto;
-  display: block; /* Prevents extra space below images */
+  display: block;
   border-radius: var(--border-radius);
   margin-bottom: 1rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -416,7 +515,7 @@ input[type="file"] {
   color: var(--secondary-color);
   margin-top: 1.5em;
   margin-bottom: 0.5em;
-  font-weight: bold; /* Ensure headings are bold */
+  font-weight: bold;
 }
 
 .markdown-output h1 { font-size: 2em; }
@@ -512,7 +611,7 @@ input[type="file"] {
   display: flex;
   gap: 1rem;
   margin-top: 1.5rem;
-  justify-content: flex-end; /* Align buttons to the right */
+  justify-content: flex-end;
 }
 
 .button-group button {

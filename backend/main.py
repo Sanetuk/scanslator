@@ -3,15 +3,14 @@ import uuid
 import pytesseract
 from dotenv import load_dotenv
 
-load_dotenv() # Load environment variables from .env file
-print(f"DEBUG: GEMINI_API_KEY loaded: {os.environ.get('GEMINI_API_KEY')}")
+load_dotenv()  # Load environment variables from .env file
 from pdf2image import convert_from_path
 
 
 from PIL import Image
 import google.generativeai as genai
 from fastapi import FastAPI, File, UploadFile, BackgroundTasks, HTTPException
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from enum import Enum
@@ -19,6 +18,7 @@ from prompts import INITIAL_TRANSLATION_PROMPT, REFINEMENT_PROMPT
 import base64
 import io
 import logging
+import fitz  # PyMuPDF
 
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -68,6 +68,23 @@ model = genai.GenerativeModel('gemini-2.5-flash')
 UPLOAD_DIR = "uploads"
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
+
+def _extract_text_from_pdf(file_path: str, task_id: str) -> str:
+    try:
+        logger.info(f"[Task {task_id}] Attempting direct text extraction from PDF.")
+        doc = fitz.open(file_path)
+        text = ""
+        for page in doc:
+            text += page.get_text("text")
+        doc.close()
+        if text.strip():
+            logger.info(f"[Task {task_id}] Direct text extraction successful. Extracted {len(text)} characters.")
+        else:
+            logger.info(f"[Task {task_id}] Direct text extraction resulted in empty text.")
+        return text
+    except Exception as e:
+        logger.warning(f"[Task {task_id}] Direct text extraction from PDF failed: {e}")
+        return ""
 
 def _convert_file_to_images(file_path: str, file_type: str, task_id: str) -> list[Image.Image]:
     try:
@@ -249,22 +266,29 @@ class TranslationJob(BaseModel):
 jobs = {}
 
 def process_file(task_id: str, file_path: str, file_type: str):
-    jobs[task_id].status = JobStatus.PROCESSING # Initial general processing status
+    jobs[task_id].status = JobStatus.PROCESSING
     logger.info(f"[Task {task_id}] Starting processing for file: {file_path}")
 
     try:
-        jobs[task_id].status = JobStatus.IMAGE_CONVERSION # New status
+        extracted_text = ""
+        if file_type == 'application/pdf':
+            extracted_text = _extract_text_from_pdf(file_path, task_id)
+
+        jobs[task_id].status = JobStatus.IMAGE_CONVERSION
         images = _convert_file_to_images(file_path, file_type, task_id)
         base64_images = _save_images_as_base64(images, task_id)
         jobs[task_id].original_images = base64_images
 
-        jobs[task_id].status = JobStatus.OCR_PROCESSING # New status
-        extracted_text = _perform_ocr(images, task_id)
+        if not extracted_text.strip():
+            logger.info(f"[Task {task_id}] Using OCR pipeline for text extraction.")
+            jobs[task_id].status = JobStatus.OCR_PROCESSING
+            extracted_text = _perform_ocr(images, task_id)
+        else:
+            logger.info(f"[Task {task_id}] Direct text extraction succeeded; skipping OCR.")
 
-        jobs[task_id].status = JobStatus.TRANSLATION_PROCESSING # New status
+        jobs[task_id].status = JobStatus.TRANSLATION_PROCESSING
         translated_text = _translate_text_with_gemini(extracted_text, task_id)
 
-        # Step 5: Finalize job
         jobs[task_id].status = JobStatus.COMPLETE
         jobs[task_id].translated_text = translated_text
         logger.info(f"[Task {task_id}] Processing complete.")
@@ -323,7 +347,7 @@ async def get_result(task_id: str, format: str | None = None):
     }
 
 @app.get("/api/list_models")
-async def list_models():
+def list_models():
     try:
         models = [m.name for m in genai.list_models()]
         return {"available_models": models}

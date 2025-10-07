@@ -6,3 +6,4 @@ pytesseract
 google-generativeai
 python-dotenv
 reportlab
+pymupdf
