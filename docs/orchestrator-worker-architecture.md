@@ -76,3 +76,11 @@
 ```
 
 This markdown captures the division of responsibilities between orchestrator and worker processes, the contracts they use to exchange information, and a visual representation of how messages flow through the system. Additional operational details (authentication, retries, back-off policies) can be layered on top of this baseline design.
+
+## 6. Translation Engine Package
+- Location: `backend/app/engine/`
+- Core modules:
+  - `models.py`: job status enums, shared DTOs, pipeline result dataclass.
+  - `services/`: ingestion, OCR, translation, and export services, each encapsulating external dependencies.
+  - `pipeline.py`: `TranslationPipeline` orchestrates services, emits status callbacks, and returns artefacts.
+- FastAPI currently hosts the orchestrator stub, instantiating the pipeline directly; forthcoming work will migrate job intake and state management to a dedicated orchestrator service while reusing these components.

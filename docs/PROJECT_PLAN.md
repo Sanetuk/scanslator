@@ -1,4 +1,4 @@
-﻿# Project Plan: Lao-Korean Translator
+# Project Plan: Lao-Korean Translator
 
 This plan tracks the evolution of the Lao-Korean Translator as it transitions from the initial monolithic MVP to a modular orchestrator/worker architecture.
 
@@ -34,7 +34,7 @@ This plan tracks the evolution of the Lao-Korean Translator as it transitions fr
 - [ ] Establish disaster-recovery procedures (snapshot strategy, job replay guidelines).
 
 ## Documentation & Communication
-- [ ] Update `README.md` with orchestrator/worker setup instructions, including environment variables and queue dependencies.
+- [ ] Update `README` equivalent docs with orchestrator/worker setup instructions, including environment variables and queue dependencies.
 - [ ] Expand developer onboarding docs: local orchestration stack, test scripts, troubleshooting guide.
 - [ ] Maintain architecture notes in `docs/` (sequence diagrams, component responsibilities) as the design evolves.
 
