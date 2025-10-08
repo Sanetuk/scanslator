@@ -17,6 +17,7 @@ The FastAPI backend currently still exposes legacy `/upload` endpoints, while th
 - Shared uploads directory is mounted into backend and worker (`./backend/uploads`), so queued jobs can read the files saved during upload.
 - Configure `.env` for the backend (Gemini API key, etc.) and ensure `ORCHESTRATOR_BASE_URL`/`REDIS_URL` are set via compose before starting. Optional knobs: `ORCHESTRATOR_DB_CONNECT_RETRIES`/`ORCHESTRATOR_DB_CONNECT_BACKOFF` govern how long the orchestrator waits for the database to become available.
 - Optional queue knobs (JOB_QUEUE_MAX_RETRIES, JOB_QUEUE_BACKOFF_BASE_SECONDS, JOB_QUEUE_ACK_TIMEOUT_MS) control retry limits and visibility timeouts for the worker.
+- Python integrations can import ackend.sdk.JobsApiClient to submit jobs and poll status programmatically.
 - Worker fails fast if REDIS_URL is missing or Redis is unreachable; update queue settings before starting the stack.
 
 
