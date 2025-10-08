@@ -19,4 +19,8 @@ tesseract/
 *.bak
 *.log
 *.swp
-*.swo
+*.swo**/__pycache__/
+.gemini/
+.obsidian/
+*.pyc
+*.db

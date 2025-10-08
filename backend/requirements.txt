@@ -7,3 +7,8 @@ google-generativeai
 python-dotenv
 reportlab
 pymupdf
+httpx
+redis
+sqlalchemy
+psycopg[binary]
+alembic

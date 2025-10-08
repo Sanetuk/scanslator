@@ -1,4 +1,4 @@
-﻿# Project Plan: Lao-Korean Translator
+# Project Plan: Lao-Korean Translator
 
 This plan tracks the evolution of the Lao-Korean Translator as it transitions from the initial monolithic MVP to a modular orchestrator/worker architecture.
 
@@ -15,11 +15,13 @@ This plan tracks the evolution of the Lao-Korean Translator as it transitions fr
 - [x] Update PRD and architecture documentation to reflect current requirements.
 
 ## Phase 3: Modular Architecture (In Progress)
-- [ ] Introduce an orchestrator service that accepts client jobs (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/result`, `POST /jobs/{id}/cancel`).
-- [ ] Persist job metadata and artefact locations in durable storage (database + object storage).
-- [ ] Establish message queue topics for job dispatch and cancellation signalling.
-- [ ] Implement worker processes that consume queue messages, execute the translation engine, and report heartbeats/completions.
-- [ ] Define clear engine-worker contracts (shared DTOs, error taxonomy, retry policy).
+- [x] Introduce an orchestrator service that accepts client jobs (`POST /jobs`, `GET /jobs/{id}`, `GET /jobs/{id}/result`, `POST /jobs/{id}/cancel`).
+- [x] Persist job metadata via SQLAlchemy, targeting Postgres by default with a SQLite fallback for local development.
+- [x] Introduce Alembic migrations so schema evolves safely across deployments.
+- [x] Establish message queue topics for job dispatch and cancellation signalling (Redis-compatible abstraction).
+- [x] Implement worker processes that consume queue messages, execute the translation engine, and report status/artefacts.
+- [x] Define clear engine-worker contracts (shared DTOs, queue payload schema).
+- [x] Expose orchestrator job timeline and artefact retrieval endpoints for client integration.
 
 ## Phase 4: Integration & Migration
 - [ ] Adapt the existing frontend to call the orchestrator endpoints and handle the expanded status set.
@@ -34,11 +36,14 @@ This plan tracks the evolution of the Lao-Korean Translator as it transitions fr
 - [ ] Establish disaster-recovery procedures (snapshot strategy, job replay guidelines).
 
 ## Documentation & Communication
-- [ ] Update `README.md` with orchestrator/worker setup instructions, including environment variables and queue dependencies.
+- [ ] Update `README` equivalent docs with orchestrator/worker setup instructions, including environment variables and queue dependencies.
 - [ ] Expand developer onboarding docs: local orchestration stack, test scripts, troubleshooting guide.
 - [ ] Maintain architecture notes in `docs/` (sequence diagrams, component responsibilities) as the design evolves.
+- [ ] Capture queue configuration validation and failure modes in the runbook.
 
 ## Next Immediate Actions
-1. Finalise the orchestrator API design and scaffold the service.
-2. Prototype a worker that wraps the existing translation pipeline as a callable engine.
-3. Validate queue-based job hand-off locally before replacing the current monolithic flow.
+1. Expand the orchestrator API surface (cancellation confirmation, progress polling, artefact downloads) and align the frontend workflow.
+2. Instrument the queue (pending depth, dead-letter inspection) and surface operational dashboards/alerts for retries.
+3. Automate end-to-end integration tests that exercise upload intake through worker completion and result retrieval.
+
+
