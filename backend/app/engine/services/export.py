@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Iterable
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -10,11 +11,35 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 logger = logging.getLogger(__name__)
 
+_FONT_FILENAME = "NotoSansKR-VariableFont_wght.ttf"
+
+
+def _font_search_paths() -> Iterable[Path]:
+    base = Path(__file__).resolve()
+    candidates = [
+        base.parents[2] / "fonts",  # /app/app/fonts (historical layout)
+        base.parents[3] / "fonts",  # /app/fonts (current docker layout)
+        Path.cwd() / "fonts",
+    ]
+    seen = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        yield candidate
+
+
+def _locate_font() -> Path:
+    for directory in _font_search_paths():
+        font_path = directory / _FONT_FILENAME
+        if font_path.exists():
+            return font_path
+    raise FileNotFoundError(f"Unable to locate {_FONT_FILENAME} in known font directories")
+
 
 def create_pdf_from_text(text: str, output_path: str) -> None:
-    fonts_dir = Path(__file__).resolve().parents[2] / "fonts"
-    font_path = fonts_dir / "NotoSansKR-VariableFont_wght.ttf"
-
+    font_path = _locate_font()
     try:
         pdfmetrics.registerFont(TTFont("NotoSansKR", str(font_path)))
     except Exception as exc:

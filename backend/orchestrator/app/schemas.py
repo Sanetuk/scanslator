@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.engine.models import JobStatus
+from app.shared.status import JobStatus
 
 
 class SourceType(str, Enum):
@@ -31,12 +31,19 @@ class JobCreateResponse(BaseModel):
     submitted_at: datetime
 
 
+class JobEvent(BaseModel):
+    status: JobStatus
+    detail: Optional[str] = None
+    created_at: datetime
+
+
 class JobStatusResponse(BaseModel):
     job_id: str
     status: JobStatus
     detail: Optional[str] = None
     submitted_at: datetime
     updated_at: datetime
+    history: List[JobEvent] = Field(default_factory=list)
 
 
 class JobResultResponse(BaseModel):
@@ -44,6 +51,13 @@ class JobResultResponse(BaseModel):
     status: JobStatus
     translated_text_uri: Optional[str] = None
     artefacts: Dict[str, str] = Field(default_factory=dict)
+
+
+class JobStatusPatch(BaseModel):
+    job_id: str
+    status: JobStatus
+    detail: Optional[str] = None
+    artefacts: Optional[Dict[str, str]] = None
 
 
 class JobCancelResponse(BaseModel):

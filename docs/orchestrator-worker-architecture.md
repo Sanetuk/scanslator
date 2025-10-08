@@ -1,86 +1,88 @@
-﻿# Orchestrator and Worker Interaction Overview
+# Orchestrator and Worker Architecture
 
 ## 1. High-Level Summary
-- **Orchestrator**: Receives translation requests from clients (web, CLI, partners), validates them, assigns `job_id`s, persists metadata, and publishes work items to the message queue. It also enforces auth, quotas, prioritisation, retries, and cancellation policies.
-- **Worker**: Pulls jobs from the queue (or accepts pushes), downloads referenced inputs, runs the translation pipeline (conversion, OCR, translation, export), uploads artefacts, and reports status back to the orchestrator.
-- **Shared Services**: Object storage keeps large binaries, the job database records metadata, and the message queue transports job commands and cancellation signals.
+- **Frontend / Clients**: Upload Lao documents, poll job status, fetch artefacts, or cancel work through the backend API facade.
+- **Backend API**: Accepts uploads, stores files on the shared volume, and forwards orchestration commands using the shared JobStatus contract.
+- **Orchestrator**: FastAPI service backed by Postgres + Alembic migrations. Persists job metadata and timeline events, exposes `/jobs` REST endpoints, and publishes work items to Redis Streams.
+- **Worker**: Long-running runner that consumes Redis Streams, executes the translation pipeline, pushes status updates (with retry/backoff) to the orchestrator, and deposits artefacts.
+- **Shared Services**: Redis provides durable queuing semantics; Postgres stores job state and timeline; the shared upload volume exposes source files and generated artefacts to both backend and worker containers.
 
 ## 2. Component Responsibilities
 ### Orchestrator
-- Validate incoming jobs and issue unique `job_id`s.
-- Persist job requests and publish compact work descriptors to `jobs.ready` (or similar) queue topics.
-- Receive heartbeat, completion, failure events, and update persisted status.
-- Apply operational policy: throttling, scheduling, retries, manual overrides.
+- Validate incoming jobs, persist metadata, and append timeline events for every state change.
+- Publish work items to `jobs.ready`, listen for cancellation via `jobs.cancel`, and expose artefact download endpoints.
+- Run Alembic migrations automatically on startup, stamping the schema if legacy tables exist without a version record.
 
 ### Worker
-- Consume jobs when capacity is available, prefetch required input artefacts, and execute the engine pipeline.
-- Emit periodic heartbeats that describe the current stage and progress percentage.
-- Upload artefacts (markdown text, PDF, previews) to object storage and return their locations.
-- Report failures with categorised error codes and retry hints so the orchestrator can react intelligently.
+- Consume messages from Redis Streams using consumer groups, auto-claim stale deliveries, and honour exponential backoff + max retry limits.
+- Emit human-readable status summaries (derived from the shared contract) so the orchestrator timeline is rich enough for the UI.
+- Upload artefacts (text, generated PDFs, previews) or push inline metadata back via `/jobs/status`.
 
-## 3. API and Messaging Contracts
+### Backend API
+- Provide the legacy `/upload`, `/api/status/{task_id}`, and `/api/result/{task_id}` endpoints as a facade over the orchestrator REST API.
+- Save uploaded documents to the shared volume used by workers and hand off orchestration requests.
+
+## 3. End-to-End Flow (Mermaid)
+```mermaid
+graph LR
+    Client[Frontend & External Clients]
+    Backend[Backend API\nFastAPI]
+    Orchestrator[Orchestrator\nFastAPI + Postgres]
+    Queue[(Redis Streams\njobs.ready / jobs.cancel)]
+    Worker[Worker Runner\nTranslation Pipeline]
+    Uploads[(Shared Volume\n/uploads)]
+    DB[(Postgres\njobs + job_events)]
+
+    Client -->|Upload| Backend
+    Backend -->|Save file| Uploads
+    Backend -->|POST /jobs| Orchestrator
+    Orchestrator -->|Persist + Timeline| DB
+    Orchestrator -->|Publish job| Queue
+    Queue -->|Claim work| Worker
+    Worker -->|Read file| Uploads
+    Worker -->|Status/artefacts| Orchestrator
+    Orchestrator -->|Timeline & artefacts| DB
+    Client <-->|Status / Artefacts| Orchestrator
+    Orchestrator -->|Publish cancel| Queue
+    Worker -->|Ack / Retry / DLQ| Queue
+```
+
+## 4. API and Messaging Contracts
 | Direction | Interface | Path / Channel | Payload Highlights | Purpose |
 | --------- | --------- | -------------- | ------------------ | ------- |
-| Client -> Orchestrator | HTTP REST | `POST /jobs` | upload metadata, options, auth | Create job, receive `job_id` |
-| Client -> Orchestrator | HTTP REST | `GET /jobs/{id}` | none | Poll job status timeline |
+| Client -> Backend -> Orchestrator | HTTP REST | `POST /jobs` | upload metadata, options, auth | Create job, receive `job_id` |
+| Client -> Orchestrator | HTTP REST | `GET /jobs/{id}` | none | Latest status with timeline |
+| Client -> Orchestrator | HTTP REST | `GET /jobs/{id}/timeline` | ordered status events | Power progress UI |
 | Client -> Orchestrator | HTTP REST | `GET /jobs/{id}/result` | `format` query | Retrieve final artefacts |
+| Client -> Orchestrator | HTTP REST | `GET /jobs/{id}/artefacts/{name}` | streamed/inline artefact | Download or preview stored artefacts |
 | Client -> Orchestrator | HTTP REST | `POST /jobs/{id}/cancel` | optional reason | Request cancellation |
-| Orchestrator -> Queue | Message | `jobs.ready` topic | `job_id`, input URIs, options, priority | Notify workers of executable work |
-| Worker -> Orchestrator | HTTP/gRPC | `/internal/jobs/{id}/heartbeat` | stage id, percent, worker id | Progress update |
-| Worker -> Orchestrator | HTTP/gRPC | `/internal/jobs/{id}/complete` | artefact URIs, summary, duration | Mark success |
-| Worker -> Orchestrator | HTTP/gRPC | `/internal/jobs/{id}/fail` | error code, message, retryable flag | Mark failure |
-| Orchestrator -> Queue | Message | `jobs.cancel` topic | `job_id`, cancel token | Broadcast cancellation to workers |
+| Orchestrator -> Queue | Redis Stream | `jobs.ready` | job descriptor, attempt counter | Notify workers of executable work |
+| Orchestrator -> Queue | Redis Stream | `jobs.cancel` | job id, cancel token | Broadcast cancellation |
+| Worker -> Orchestrator | HTTP REST | `/jobs/status` | status enum, detail, artefacts | Update timeline + artefacts |
 
-> **Note**: Worker-to-orchestrator calls may be implemented as REST, gRPC, or simply by writing to a status topic. The important property is having a single source of truth for state transitions.
+> **Note**: Worker-to-orchestrator callbacks can be REST (current implementation), gRPC, or message-based, as long as they update the single source of truth inside Postgres.
 
-## 4. Example Sequence
-1. Client submits `POST /jobs` with file references and translation options.
-2. Orchestrator persists the request, issues `job_id`, and enqueues a work descriptor on `jobs.ready`.
-3. Idle worker consumes the descriptor, downloads inputs from storage, and starts the engine pipeline.
-4. Worker sends periodic heartbeats (stage = `OCR_PROCESSING`, percent = 35, etc.).
-5. When finished, worker uploads artefacts and calls `/internal/jobs/{id}/complete` with locations and metrics.
-6. Orchestrator updates state to `SUCCEEDED`, exposing artefact links so the client can fetch them via `GET /jobs/{id}/result`.
-7. If the client calls `POST /jobs/{id}/cancel`, the orchestrator publishes a `jobs.cancel` message; workers honour it and report cancellation via the failure or completion channel.
+## 5. Timeline Behaviour
+1. Client uploads through the backend facade; backend stores the file and calls `POST /jobs`.
+2. Orchestrator persists the job (`jobs` table), logs an initial `PENDING` event (`job_events` table), and publishes the payload to `jobs.ready`.
+3. A worker claims the stream entry, reads the file from the shared volume, and runs the translation pipeline. Each stage calls the status callback, yielding timeline entries such as `IMAGE_CONVERSION`, `OCR_PROCESSING`, etc.
+4. Successful completion posts artefact metadata (text + previews) and marks the job `COMPLETE`; failures requeue with backoff or ultimately dead-letter.
+5. Clients poll `GET /jobs/{id}` or `GET /jobs/{id}/timeline` for progress, then fetch artefacts via `GET /jobs/{id}/result` or the targeted artefact endpoint.
+6. Cancellation (`POST /jobs/{id}/cancel`) updates the job, appends a timeline entry, and publishes to `jobs.cancel`; workers honour cancellation before acknowledging.
 
-## 5. Visual Diagram
-```
-+-----------------+          HTTP(S)          +-----------------------+
-|  Client Apps    | -----------------------> |   Orchestrator API    |
-| (web / CLI / B2B)|                         |  (auth, DB, queue)     |
-+-----------------+ <------ status/results --+-----------+-----------+
-                                                        |
-                                      enqueue jobs      |   cancel signals
-                                                        v
-                                             +-----------------------+
-                                             |     Message Queue     |
-                                             |  (jobs.ready, etc.)   |
-                                             +-----------+-----------+
-                                                         |
-                                                         v consume
-                                             +-----------------------+
-                                             |        Worker         |
-                                             |   (engine pipeline)   |
-                                             +-----------+-----------+
-                                                         |
-                                                         v heartbeats/results
-                                             +-----------------------+
-                                             |  Orchestrator state   |
-                                             |   DB & artefact map   |
-                                             +-----------+-----------+
-                                                         |
-                                                         v artefact URIs
-                                             +-----------------------+
-                                             |    Object Storage     |
-                                             |   (PDF / TXT / img)   |
-                                             +-----------------------+
-```
-
-This markdown captures the division of responsibilities between orchestrator and worker processes, the contracts they use to exchange information, and a visual representation of how messages flow through the system. Additional operational details (authentication, retries, back-off policies) can be layered on top of this baseline design.
-
-## 6. Translation Engine Package
+## 6. Shared Translation Engine Package
 - Location: `backend/app/engine/`
-- Core modules:
-  - `models.py`: job status enums, shared DTOs, pipeline result dataclass.
-  - `services/`: ingestion, OCR, translation, and export services, each encapsulating external dependencies.
-  - `pipeline.py`: `TranslationPipeline` orchestrates services, emits status callbacks, and returns artefacts.
-- FastAPI currently hosts the orchestrator stub, instantiating the pipeline directly; forthcoming work will migrate job intake and state management to a dedicated orchestrator service while reusing these components.
+- Key modules reuse the shared `JobStatus` enum exported from `backend/app/shared/status.py`, ensuring consistent contracts across backend, orchestrator, and worker.
+- `pipeline.py` orchestrates ingestion, OCR, translation, and export steps while emitting callback events consumed by the worker.
+
+## 7. Queue & Persistence Details
+- **Redis Streams**: Consumer group (`jobs-workers`) with configurable visibility timeout (`JOB_QUEUE_ACK_TIMEOUT_MS`), retry/backoff knobs (`JOB_QUEUE_MAX_RETRIES`, `JOB_QUEUE_BACKOFF_*`), and DLQ routing (`jobs.dead`). Misconfiguration of `REDIS_URL` fails fast rather than silently falling back.
+- **Postgres / Alembic**: Startup runs Alembic migrations; if tables already exist (legacy deployments) a stamp operation seeds the version table before `upgrade` runs.
+- **Artefact Storage**: Shared `/backend/uploads` volume gives backend and worker consistent access to source files and generated outputs. Future work includes moving large artefacts to object storage.
+
+## 8. Documentation & Operations
+- Queue configuration, retry policy, and failure modes are captured in the runbook (`docs/README.md`).
+- Alembic migrations ensure schema consistency across environments; run `docker compose build orchestrator` after schema-affecting changes.
+- Observability hooks (structured logging for ack/retry/dead-letter) feed into future metrics dashboards for pending/dead-letter counts.
+
+

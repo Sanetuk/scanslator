@@ -1,20 +1,78 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=orchestrator
+      - POSTGRES_USER=orchestrator
+      - POSTGRES_PASSWORD=orchestrator
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orchestrator -d orchestrator"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  orchestrator:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: uvicorn orchestrator.app.main:app --host 0.0.0.0 --port 8001
+    environment:
+      - ORCHESTRATOR_ALLOWED_ORIGINS=*
+      - REDIS_URL=redis://redis:6379
+      - ORCHESTRATOR_DATABASE_URL=postgresql+psycopg://orchestrator:orchestrator@postgres:5432/orchestrator
+      - ORCHESTRATOR_DB_CONNECT_RETRIES=20
+      - ORCHESTRATOR_DB_CONNECT_BACKOFF=1.5
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
   backend:
     build:
       context: ./backend
     env_file:
       - ./backend/.env
-    # RENDER_EXTERNAL_URL is not needed for local Docker setup
-    # volumes:
-    #   - ./backend/uploads:/app/uploads # Uncomment if you need persistent uploads
+    environment:
+      - ORCHESTRATOR_BASE_URL=http://orchestrator:8001
+      - ORCHESTRATOR_TIMEOUT=30
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      - orchestrator
+
+  worker:
+    build:
+      context: ./backend
+    command: python -m worker.runner
+    environment:
+      - ORCHESTRATOR_BASE_URL=http://orchestrator:8001
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./backend/uploads:/app/uploads
+    depends_on:
+      - orchestrator
 
   frontend:
     build:
       context: ./frontend
       args:
-        # The backend URL is an empty string because we are using a reverse proxy.
         - VITE_APP_BACKEND_API_URL=
     ports:
       - "80:80"
     depends_on:
       - backend
+
+volumes:
+  postgres-data:

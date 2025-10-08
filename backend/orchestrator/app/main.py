@@ -6,7 +6,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from orchestrator.app.routes import jobs
+from .routes import jobs
+from .migrations_runner import run_migrations
+from .storage import get_store
 
 load_dotenv()
 
@@ -25,6 +27,14 @@ app.add_middleware(
 app.include_router(jobs.router)
 
 
+@app.on_event("startup")
+def on_startup() -> None:
+    run_migrations()
+    store = get_store()
+    store.get("noop")
+
+
 @app.get("/health", tags=["health"])
 def health_check() -> dict[str, str]:
     return {"status": "ok"}
+
