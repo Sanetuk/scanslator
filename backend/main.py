@@ -4,14 +4,13 @@ import uuid
 from typing import Any, Dict
 
 import httpx
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.requests import Request
 
 from app.engine.services.export import create_pdf_from_text
-
-load_dotenv()  # Load environment variables from .env file
+from app.settings import settings
 
 
 import logging
@@ -21,39 +20,60 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+
+class LargeUploadRequest(Request):
+    async def _get_form(
+        self,
+        *,
+        max_files: int | float = 1000,
+        max_fields: int | float = 1000,
+        max_part_size: int = 1024 * 1024,
+    ):
+        adjusted_part_size = max_part_size
+        if max_part_size == 1024 * 1024:
+            adjusted_part_size = settings.upload.max_size_bytes
+        return await super()._get_form(
+            max_files=max_files,
+            max_fields=max_fields,
+            max_part_size=adjusted_part_size,
+        )
+
+
+app = FastAPI(request_class=LargeUploadRequest)
 
 # Configure CORS
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://192.168.10.31:5173",
-]
-
-# Dynamically add allowed frontend origin from environment variable
-allowed_frontend_origin = os.environ.get('ALLOWED_FRONTEND_ORIGIN')
-if allowed_frontend_origin:
-    origins.append(allowed_frontend_origin)
-
-render_external_url = os.environ.get('RENDER_EXTERNAL_URL')
-if render_external_url:
-    origins.append(render_external_url)
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=['*'],
     allow_headers=['*'],
 )
 
-UPLOAD_DIR = 'uploads'
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
 
-ORCHESTRATOR_BASE_URL = os.getenv('ORCHESTRATOR_BASE_URL')
-ORCHESTRATOR_TIMEOUT = float(os.getenv('ORCHESTRATOR_TIMEOUT', '30'))
+@app.on_event('startup')
+async def _startup() -> None:
+    if settings.orchestrator.base_url:
+        app.state.http_client = httpx.AsyncClient(
+            base_url=settings.orchestrator.base_url,
+            timeout=settings.orchestrator.timeout_seconds,
+        )
+    else:
+        app.state.http_client = None
 
+
+@app.on_event('shutdown')
+async def _shutdown() -> None:
+    client: httpx.AsyncClient | None = getattr(app.state, 'http_client', None)
+    if client:
+        await client.aclose()
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    client: httpx.AsyncClient | None = getattr(app.state, 'http_client', None)
+    if client is None:
+        raise HTTPException(status_code=503, detail='Orchestrator service is not configured.')
+    return client
 
 def _determine_source_type(content_type: str | None) -> str:
     if not content_type:
@@ -66,13 +86,11 @@ def _determine_source_type(content_type: str | None) -> str:
 
 
 async def _post_orchestrator(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    if not ORCHESTRATOR_BASE_URL:
-        raise HTTPException(status_code=503, detail='Orchestrator service is not configured.')
+    client = _get_http_client()
     try:
-        async with httpx.AsyncClient(base_url=ORCHESTRATOR_BASE_URL, timeout=ORCHESTRATOR_TIMEOUT) as client:
-            response = await client.post(path, json=payload)
-            response.raise_for_status()
-            return response.json()
+        response = await client.post(path, json=payload)
+        response.raise_for_status()
+        return response.json()
     except httpx.HTTPStatusError as exc:  # pragma: no cover - network path
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except httpx.RequestError as exc:  # pragma: no cover - network path
@@ -80,27 +98,53 @@ async def _post_orchestrator(path: str, payload: Dict[str, Any]) -> Dict[str, An
 
 
 async def _get_orchestrator(path: str) -> Dict[str, Any]:
-    if not ORCHESTRATOR_BASE_URL:
-        raise HTTPException(status_code=503, detail='Orchestrator service is not configured.')
+    client = _get_http_client()
     try:
-        async with httpx.AsyncClient(base_url=ORCHESTRATOR_BASE_URL, timeout=ORCHESTRATOR_TIMEOUT) as client:
-            response = await client.get(path)
-            response.raise_for_status()
-            return response.json()
+        response = await client.get(path)
+        response.raise_for_status()
+        return response.json()
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except httpx.RequestError as exc:
         raise HTTPException(status_code=503, detail=f'Failed to reach orchestrator: {exc}')
 
 
+def _sanitize_filename(filename: str | None) -> str:
+    if not filename:
+        return "upload"
+    return os.path.basename(filename)
+
+
+async def _save_upload_to_disk(file: UploadFile, destination: str) -> None:
+    chunk_size = 4 * 1024 * 1024  # 4MB
+    total_bytes = 0
+    try:
+        with open(destination, 'wb') as buffer:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > settings.upload.max_size_bytes:
+                    raise HTTPException(status_code=413, detail='Uploaded file exceeds allowed size.')
+                buffer.write(chunk)
+    except Exception:
+        try:
+            os.remove(destination)
+        except FileNotFoundError:
+            pass
+        raise
+    finally:
+        await file.close()
+
+
 @app.post('/upload/')
 async def upload_file(file: UploadFile = File(...)):
-    file_contents = await file.read()
     job_id = str(uuid.uuid4())
-    file_path = os.path.abspath(os.path.join(UPLOAD_DIR, f'{job_id}_{file.filename}'))
+    safe_filename = _sanitize_filename(file.filename)
+    file_path = str(settings.upload.path_for(f'{job_id}_{safe_filename}'))
 
-    with open(file_path, 'wb') as buffer:
-        buffer.write(file_contents)
+    await _save_upload_to_disk(file, file_path)
 
     source_type = _determine_source_type(file.content_type)
     payload = {
@@ -138,7 +182,7 @@ async def get_result(task_id: str, format: str | None = None):
         if not translated_text:
             raise HTTPException(status_code=404, detail='Translated text not available for PDF conversion.')
         pdf_filename = f'translation_{task_id}.pdf'
-        pdf_path = os.path.join(UPLOAD_DIR, pdf_filename)
+        pdf_path = str(settings.upload.path_for(pdf_filename))
         try:
             create_pdf_from_text(translated_text, pdf_path)
             return FileResponse(path=pdf_path, filename=pdf_filename, media_type='application/pdf')
@@ -163,5 +207,3 @@ def list_models():
         return {'available_models': models}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f'Failed to list models: {e}')
-
-
